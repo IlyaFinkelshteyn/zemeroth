@@ -43,6 +43,7 @@ fn check_move_to(state: &State, command: &command::MoveTo) -> Result<(), Error> 
         }
     }
     for step in command.path.steps() {
+        // TODO: check here if these objects have Blocker part
         if !core::object_ids_at(state, step.to).is_empty() {
             return Err(Error::TileIsOccupied);
         }

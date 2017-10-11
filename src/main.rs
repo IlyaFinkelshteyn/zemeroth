@@ -30,7 +30,7 @@ pub fn main() {
 }
 
 fn enable_backtrace() {
-    // some trivial edit
+    // another trivial edit
     if std::env::var("RUST_BACKTRACE").is_err() {
         std::env::set_var("RUST_BACKTRACE", "1");
     }

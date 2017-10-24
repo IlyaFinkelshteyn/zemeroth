@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::iter::FromIterator;
 use rand::{thread_rng, Rng};
 use core::map::PosHex;
-use core::{self, belongs_to, Moves, ObjId, PlayerId, State};
+use core::{self, Moves, ObjId, PlayerId, State};
 use core::command;
 use core::component::{self, Component};
 use core::command::Command;
@@ -86,21 +86,15 @@ where
     do_event(state, cb, &event);
 }
 
-// TODO: try to remove code duplication with `try_execute_reaction_attacks`
 fn check_reaction_attacks_at(state: &mut State, target_id: ObjId, pos: PosHex) -> bool {
     let initial_player_id = state.player_id;
-    let ids: Vec<_> = state.parts.agent.ids().collect();
     let mut result = false;
-    for obj_id in ids {
-        let unit_player_id = state.parts.belongs_to.get(obj_id).0;
-        if unit_player_id == initial_player_id {
-            continue;
-        }
+    for obj_id in core::enemy_agent_ids(state, initial_player_id) {
         let command_attack = command::Attack {
             attacker_id: obj_id,
             target_id,
         };
-        state.player_id = unit_player_id;
+        state.player_id = state.parts.belongs_to.get(obj_id).0;
         if check_attack_at(state, &command_attack, pos).is_ok() {
             result = true;
             break;
@@ -115,8 +109,10 @@ where
     F: FnMut(&State, &Event, Phase),
 {
     let mut components = state.prototypes.0[&command.prototype].clone();
+    if let Some(player_id) = command.owner {
+        components.push(Component::BelongsTo(component::BelongsTo(player_id)));
+    }
     components.extend_from_slice(&[
-        Component::BelongsTo(component::BelongsTo(command.owner)),
         Component::Pos(component::Pos(command.pos)),
         Component::Meta(component::Meta {
             name: command.prototype.clone(),
@@ -188,14 +184,9 @@ where
 {
     let mut status = AttackStatus::Miss;
     let initial_player_id = state.player_id;
-    let ids: Vec<_> = state.parts.agent.ids().collect();
-    for obj_id in ids {
+    for obj_id in core::enemy_agent_ids(state, initial_player_id) {
         if state.parts.agent.get_opt(obj_id).is_none() {
             // check if target is killed
-            continue;
-        }
-        let unit_player_id = state.parts.belongs_to.get(obj_id).0;
-        if unit_player_id == initial_player_id {
             continue;
         }
         let command_attack = command::Attack {
@@ -203,7 +194,7 @@ where
             target_id,
         };
         let command = command::Command::Attack(command_attack.clone());
-        state.player_id = unit_player_id;
+        state.player_id = state.parts.belongs_to.get(obj_id).0;
         if check(state, &command).is_err() {
             continue;
         }
@@ -234,12 +225,7 @@ where
         let active_event = ActiveEvent::EndTurn(event::EndTurn {
             player_id: player_id_old,
         });
-        let actor_ids = state
-            .parts
-            .agent
-            .ids()
-            .filter(|&id| belongs_to(state, player_id_old, id))
-            .collect();
+        let actor_ids = core::players_agent_ids(state, player_id_old);
         let effects = HashMap::new();
         let event = Event {
             active_event,
@@ -253,12 +239,7 @@ where
         let active_event = ActiveEvent::BeginTurn(event::BeginTurn {
             player_id: player_id_new,
         });
-        let actor_ids = state
-            .parts
-            .agent
-            .ids()
-            .filter(|&id| belongs_to(state, player_id_new, id))
-            .collect();
+        let actor_ids = core::players_agent_ids(state, player_id_new);
         let effects = HashMap::new();
         let event = Event {
             active_event,
@@ -278,7 +259,22 @@ fn next_player_id(state: &State) -> PlayerId {
     }
 }
 
-fn random_free_pos(state: &State, player_id: PlayerId) -> Option<PosHex> {
+fn random_free_pos(state: &State) -> Option<PosHex> {
+    let attempts = 30;
+    let radius = state.map().radius();
+    for _ in 0..attempts {
+        let pos = PosHex {
+            q: thread_rng().gen_range(-radius.0, radius.0),
+            r: thread_rng().gen_range(-radius.0, radius.0),
+        };
+        if state.map().is_inboard(pos) && !core::is_tile_blocked(state, pos) {
+            return Some(pos);
+        }
+    }
+    None
+}
+
+fn random_free_sector_pos(state: &State, player_id: PlayerId) -> Option<PosHex> {
     let attempts = 30;
     let radius = state.map().radius();
     let start_sector_width = radius.0;
@@ -292,7 +288,7 @@ fn random_free_pos(state: &State, player_id: PlayerId) -> Option<PosHex> {
             },
             r: thread_rng().gen_range(-radius.0, radius.0),
         };
-        if state.map().is_inboard(pos) && core::object_ids_at(state, pos).is_empty() {
+        if state.map().is_inboard(pos) && !core::is_tile_blocked(state, pos) {
             return Some(pos);
         }
     }
@@ -305,30 +301,27 @@ where
     F: FnMut(&State, &Event, Phase),
 {
     let player_id_initial = state.player_id;
-    for &(player_index, typename) in &[
-        // player 0
-        (0, "swordsman"),
-        (0, "spearman"),
-        (0, "swordsman"),
-        (0, "spearman"),
-        // player 1
-        (1, "imp"),
-        (1, "imp"),
-        (1, "imp"),
-        (1, "imp"),
-        (1, "imp"),
-        (1, "imp"),
-        (1, "imp"),
+    for &(owner, typename, count) in &[
+        (None, "boulder", 10),
+        (Some(PlayerId(0)), "swordsman", 2),
+        (Some(PlayerId(0)), "spearman", 2),
+        (Some(PlayerId(1)), "imp", 9),
     ] {
-        let player_id = PlayerId(player_index);
-        let pos = random_free_pos(state, player_id).unwrap();
-        let command = Command::Create(command::Create {
-            prototype: typename.into(),
-            pos,
-            owner: player_id,
-        });
-        state.player_id = player_id;
-        execute(state, &command, cb).expect("Can't create object");
+        if let Some(player_id) = owner {
+            state.player_id = player_id;
+        }
+        for _ in 0..count {
+            let pos = match owner {
+                Some(player_id) => random_free_sector_pos(state, player_id),
+                None => random_free_pos(state),
+            }.unwrap();
+            let command = Command::Create(command::Create {
+                prototype: typename.into(),
+                pos,
+                owner,
+            });
+            execute(state, &command, cb).expect("Can't create object");
+        }
     }
     state.player_id = player_id_initial;
 }

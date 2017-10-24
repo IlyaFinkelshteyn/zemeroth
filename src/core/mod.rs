@@ -58,6 +58,7 @@ rancor_storage!(Parts<ObjId>: {
     meta: component::Meta,
     belongs_to: component::BelongsTo,
     agent: component::Agent,
+    blocker: component::Blocker,
 });
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -106,19 +107,26 @@ pub fn belongs_to(state: &State, player_id: PlayerId, id: ObjId) -> bool {
     state.parts.belongs_to.get(id).0 == player_id
 }
 
-pub fn is_object_at(state: &State, pos: PosHex, id: ObjId) -> bool {
-    match state.parts.pos.get_opt(id) {
-        Some(p) => p.0 == pos,
-        None => false,
-    }
+pub fn object_ids_at(state: &State, pos: PosHex) -> Vec<ObjId> {
+    let ids = state.parts().agent.ids();
+    ids.filter(|&id| state.parts.pos.get(id).0 == pos).collect()
 }
 
-pub fn object_ids_at(state: &State, pos: PosHex) -> Vec<ObjId> {
-    let mut ids = Vec::new();
-    for id in state.parts.ids() {
-        if is_object_at(state, pos, id) {
-            ids.push(id);
+pub fn players_agent_ids(state: &State, player_id: PlayerId) -> Vec<ObjId> {
+    let ids = state.parts().agent.ids();
+    ids.filter(|&id| belongs_to(state, player_id, id)).collect()
+}
+
+pub fn enemy_agent_ids(state: &State, player_id: PlayerId) -> Vec<ObjId> {
+    let ids = state.parts().agent.ids();
+    ids.filter(|&id| !belongs_to(state, player_id, id)).collect()
+}
+
+pub fn is_tile_blocked(state: &State, pos: PosHex) -> bool {
+    for id in state.parts.blocker.ids() {
+        if state.parts.pos.get(id).0 == pos {
+            return true;
         }
     }
-    ids
+    false
 }
